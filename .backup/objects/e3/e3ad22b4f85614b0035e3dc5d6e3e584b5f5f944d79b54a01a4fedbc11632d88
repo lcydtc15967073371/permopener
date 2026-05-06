@@ -1,0 +1,303 @@
+package com.permopener
+
+import android.content.Intent
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import java.io.BufferedReader
+import java.io.InputStreamReader
+
+/**
+ * PermOpener - 权限全开工具
+ *
+ * 打开即自动执行，无需任何手动操作。
+ * 通过 Shizuku 获得 ADB shell 级别权限后，执行：
+ *   pm grant   → 授予 Android 标准权限
+ *   appops set → 授予 AppOps 权限
+ *   settings   → 修改系统设置
+ *
+ * 这等价于在手机里内置了 adb shell 命令。
+ */
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "PermOpener"
+        private const val SHIZUKU_REQUEST_CODE = 1001
+        private const val PKG = "com.permopener"
+
+        // 1) pm grant 可授予的权限列表
+        private val PM_GRANTS = listOf(
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.READ_EXTERNAL_STORAGE",
+            "android.permission.WRITE_EXTERNAL_STORAGE",
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.READ_PHONE_STATE",
+            "android.permission.CALL_PHONE",
+            "android.permission.READ_CALL_LOG",
+            "android.permission.WRITE_CALL_LOG",
+            "android.permission.ADD_VOICEMAIL",
+            "android.permission.USE_SIP",
+            "android.permission.SEND_SMS",
+            "android.permission.RECEIVE_SMS",
+            "android.permission.READ_SMS",
+            "android.permission.RECEIVE_WAP_PUSH",
+            "android.permission.RECEIVE_MMS",
+            "android.permission.READ_CONTACTS",
+            "android.permission.WRITE_CONTACTS",
+            "android.permission.GET_ACCOUNTS",
+            "android.permission.READ_CALENDAR",
+            "android.permission.WRITE_CALENDAR",
+            "android.permission.BODY_SENSORS",
+            "android.permission.ACTIVITY_RECOGNITION",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.BLUETOOTH",
+            "android.permission.BLUETOOTH_ADMIN",
+            "android.permission.NFC",
+            "android.permission.VIBRATE",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.ACCESS_NETWORK_STATE",
+            "android.permission.ACCESS_WIFI_STATE",
+            "android.permission.CHANGE_WIFI_STATE",
+            "android.permission.CHANGE_NETWORK_STATE",
+            "android.permission.FOREGROUND_SERVICE_LOCATION",
+            "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+            "android.permission.FOREGROUND_SERVICE_CAMERA",
+            "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+            "android.permission.ANSWER_PHONE_CALLS",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.BLUETOOTH_SCAN",
+            "android.permission.BLUETOOTH_ADVERTISE",
+        )
+
+        // 2) appops set 需要的 ops
+        private val APP_OPS = listOf(
+            "android:mock_location",
+            "android:post_notifications",
+            "SYSTEM_ALERT_WINDOW",
+            "WRITE_SETTINGS",
+            "START_ACTIVITY_BACKGROUND",
+            "START_FOREGROUND",
+            "GET_USAGE_STATS",
+            "REQUEST_INSTALL_PACKAGES",
+            "GET_NOTIFICATION",
+            "MANAGE_EXTERNAL_STORAGE",
+            "android:camera",
+            "android:record_audio",
+            "android:fine_location",
+            "android:read_phone_state",
+            "WAKE_LOCK",
+            "android:body_sensors",
+            "android:coarse_location",
+            "android:read_external_storage",
+            "android:write_external_storage",
+            "android:read_contacts",
+            "android:write_contacts",
+            "android:read_call_log",
+            "android:write_call_log",
+            "android:read_sms",
+            "android:write_sms",
+            "android:receive_sms",
+            "android:send_sms",
+        )
+
+        // 3) settings 命令
+        private val SETTINGS_CMDS = listOf(
+            "settings put secure install_non_market_apps 1",
+            "settings put global development_settings_enabled 1",
+        )
+
+        // 4) 额外 shell 命令
+        private val EXTRA_CMDS = listOf(
+            "pm grant $PKG android.permission.SYSTEM_ALERT_WINDOW",
+        )
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        log("")
+        log("╔══════════════════════════════════╗")
+        log("║     PermOpener v1.1              ║")
+        log("║     权限全开 · 内置 adb 命令     ║")
+        log("╚══════════════════════════════════╝")
+        log("设备: ${Build.MODEL}, SDK: ${Build.VERSION.SDK_INT}")
+
+        if (!shizukuPing()) {
+            log("✗ Shizuku 未安装或未运行")
+            log("  请先安装 Shizuku App (shizuku.rikka.app)")
+            log("  打开 Shizuku → 启动服务 → 再打开本应用")
+            toast("请先安装并启动 Shizuku")
+            finishAfter(5000)
+            return
+        }
+
+        if (!shizukuGranted()) {
+            log("→ Shizuku 未授权，正在请求授权...")
+            shizukuRequest()
+            return
+        }
+
+        log("✓ Shizuku 已授权，开始全自动执行...")
+        executeAll()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == SHIZUKU_REQUEST_CODE) {
+            if (shizukuGranted()) {
+                log("✓ Shizuku 授权成功，开始执行...")
+                executeAll()
+            } else {
+                log("✗ Shizuku 授权被拒绝，无法继续")
+                toast("Shizuku 授权被拒绝")
+                finishAfter(3000)
+            }
+        }
+    }
+
+    // ==================== Shizuku 工具 ====================
+
+    private fun shizukuPing(): Boolean = try {
+        val c = Class.forName("rikka.shizuku.Shizuku")
+        c.getMethod("ping").invoke(null) as Boolean
+    } catch (_: Exception) { false }
+
+    private fun shizukuGranted(): Boolean = try {
+        val c = Class.forName("rikka.shizuku.Shizuku")
+        val r = c.getMethod("checkSelfPermission").invoke(null) as Int
+        r == 0
+    } catch (_: Exception) { false }
+
+    private fun shizukuRequest() = try {
+        val c = Class.forName("rikka.shizuku.Shizuku")
+        c.getMethod("requestPermission", Int::class.javaPrimitiveType)
+            .invoke(null, SHIZUKU_REQUEST_CODE)
+    } catch (e: Exception) {
+        log("✗ 请求 Shizuku 授权异常: ${e.message}")
+        finishAfter(3000)
+    }
+
+    /**
+     * 通过反射调用 Shizuku.newProcess("sh") 获取 shell
+     * 等价于内置了 adb shell
+     */
+    private fun shExec(cmd: String): ShResult {
+        try {
+            val c = Class.forName("rikka.shizuku.Shizuku")
+            val m = c.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java, Array<String>::class.java, String::class.java
+            )
+            m.isAccessible = true
+            val proc = m.invoke(null, arrayOf("sh"), null, null) as Process
+
+            val os = proc.outputStream
+            os.write("$cmd 2>&1\necho \"__EXIT__:\$?\"\n".toByteArray())
+            os.write("exit\n".toByteArray())
+            os.flush()
+
+            val rdr = BufferedReader(InputStreamReader(proc.inputStream))
+            val out = rdr.readText()
+            val exitCode = proc.waitFor()
+
+            // 从输出中提取 "__EXIT__:数字"
+            val ec = Regex("__EXIT__:(\\d+)").find(out)
+                ?.groupValues?.get(1)?.toIntOrNull() ?: exitCode
+            val clean = out.replace(Regex("__EXIT__:\\d+\\s*"), "").trim()
+            return ShResult(ec, clean)
+        } catch (e: Exception) {
+            return ShResult(-1, "ERR: ${e.message}")
+        }
+    }
+
+    data class ShResult(val exitCode: Int, val output: String)
+
+    // ==================== 执行引擎 ====================
+
+    private fun executeAll() {
+        var ok = 0
+        var fail = 0
+
+        // 阶段 1: pm grant
+        log("")
+        log("── 阶段 1/4: pm grant ──")
+        for (perm in PM_GRANTS) {
+            val r = shExec("pm grant $PKG $perm 2>&1")
+            if (r.exitCode == 0) {
+                ok++
+            } else {
+                fail++
+                log("  ~ $perm → ${r.exitCode} ${r.output.take(60)}")
+            }
+        }
+        log("  ✓ pm grant: 成功=$ok 失败=$fail")
+
+        // 阶段 2: appops set
+        log("")
+        log("── 阶段 2/4: appops set ──")
+        for (op in APP_OPS) {
+            val r = shExec("appops set $PKG $op allow 2>&1")
+            if (r.exitCode == 0) {
+                ok++
+            } else {
+                fail++
+                log("  ~ $op → ${r.exitCode} ${r.output.take(60)}")
+            }
+        }
+        log("  ✓ appops set: 累计成功=$ok 累计失败=$fail")
+
+        // 阶段 3: settings
+        log("")
+        log("── 阶段 3/4: settings ──")
+        for (cmd in SETTINGS_CMDS) {
+            val r = shExec("$cmd 2>&1")
+            if (r.exitCode == 0) ok++ else {
+                fail++
+                log("  ~ $cmd → ${r.exitCode}")
+            }
+        }
+        log("  ✓ settings: 累计成功=$ok 累计失败=$fail")
+
+        // 阶段 4: 额外命令
+        log("")
+        log("── 阶段 4/4: 额外命令 ──")
+        for (cmd in EXTRA_CMDS) {
+            val r = shExec("$cmd 2>&1")
+            if (r.exitCode == 0) ok++ else {
+                fail++
+                log("  ~ $cmd → ${r.exitCode}")
+            }
+        }
+
+        // 汇总
+        log("")
+        log("╔══════════════════════════════════╗")
+        log("║  全部完成！                      ║")
+        log("║  成功: $ok  失败: $fail            ║")
+        log("╚══════════════════════════════════╝")
+        log("")
+        log("查看完整日志: adb logcat -s PermOpener")
+        log("某些权限需重启 App 生效。")
+
+        toast("权限全开完成！成功 $ok 项 失败 $fail 项")
+        finishAfter(3000)
+    }
+
+    // ==================== 辅助 ====================
+
+    private fun log(msg: String) {
+        Log.d(TAG, msg)
+        println("[PermOpener] $msg")
+    }
+
+    private fun toast(msg: String) {
+        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+    }
+
+    private fun finishAfter(ms: Long) {
+        window?.decorView?.postDelayed({ finish() }, ms)
+    }
+}

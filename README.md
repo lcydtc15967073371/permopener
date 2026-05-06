@@ -1,0 +1,224 @@
+# PermOpener — Android 权限全开工具（项目基础模板）
+
+> 包名：`com.permopener` · 构建：Kotlin + Shizuku + Shell 反射  
+> 核心能力：基于 Shizuku 获得 ADB shell 权限后，全自动执行 `pm grant` + `appops set` + `settings put`，实现手机权限一键全开。  
+> **可用作任何需要 Shizuku 集成 + 静默执行命令的 Android 项目的基础模板。**
+
+---
+
+## 📋 项目结构
+
+```
+workspace/
+├── app/
+│   ├── src/main/java/com/permopener/
+│   │   ├── MainActivity.kt         # 主入口：Shizuku 授权 + 执行全部权限命令
+│   │   ├── AdbCommandActivity.kt   # 透明Activity：远程唤醒 + 静默执行（无界面）
+│   │   └── ShizukuShell.java       # 反射桥梁：Shizuku.newProcess() 获取 shell
+│   ├── src/main/AndroidManifest.xml    # 权限声明 + ShizukuProvider + AdbCommandActivity
+│   ├── build.gradle.kts             # Shizuku 依赖 + AAPT2 ARM64 配置
+│   └── ...
+├── gradle/libs.versions.toml       # 版本目录
+├── build.gradle.kts                 # 根构建脚本
+├── settings.gradle.kts              # 项目设置
+├── gradle.properties                # Proot/ARM64 兼容配置
+└── README.md                        # 本文件
+```
+
+---
+
+## 🧠 Shizuku 集成经验（踩坑史）
+
+### 核心结论
+Shizuku 的本质是给 APP 提权到 **ADB shell 级别**。有了 shell 权限，直接执行 `pm grant` / `appops set` / `settings put` 就够了。
+
+### 正确实现方式（已验证）
+
+| 步骤 | 实现 | 说明 |
+|------|------|------|
+| 依赖 | `dev.rikka.shizuku:api:13.1.5` + `provider:13.1.5` | 直接引入 |
+| 服务检测 | `Shizuku.ping()` | 非公开 API，需反射调用 |
+| 授权检查 | `Shizuku.checkSelfPermission()` | 公开 API，直接调用 |
+| 请求授权 | `Shizuku.requestPermission(code)` | 公开 API，直接调用 |
+| 授权结果 | `Shizuku.addRequestPermissionResultListener()` | **不是 onActivityResult！** |
+| 执行命令 | `Shizuku.newProcess("sh")` → 写入 shell 命令 | private 方法，需反射 + setAccessible |
+
+### 走过的弯路（不要重蹈覆辙）
+1. ❌ **Binder transact 调 AppOpsService** — 权限不够，绕路了
+2. ❌ **UserService + AIDL** — 太重，编译环境不支持 AIDL
+3. ❌ **用 `onActivityResult` 监听授权结果** — Shizuku 不通过这个返回
+4. ❌ **在 Kotlin 中反射调用 `newProcess`** — Kotlin 编译检查会拦截 private 方法，必须放 Java 文件
+5. ❌ **预先检查 `Shizuku.ping()`** — 服务可能还没连上，直接 `requestPermission` 最稳
+
+---
+
+## 🚀 使用方法
+
+### 1. 前提条件
+- 设备已安装 **[Shizuku App](https://shizuku.rikka.app/)**
+- 打开 Shizuku → **启动服务**
+- 首次使用需在弹出的 Shizuku 授权对话框中点击「允许」
+
+### 2. 安装 PermOpener
+```bash
+# 复制 APK 到 sdcard
+cp app/build/outputs/apk/debug/app-debug.apk /sdcard/Download/PermOpener.apk
+
+# 静默安装（自动授予所有运行时权限）
+cat /sdcard/Download/PermOpener.apk | pm install -g -S $(stat -c%s /sdcard/Download/PermOpener.apk)
+```
+
+### 3. 运行方式（3种）
+
+**方式1：点击桌面图标**
+直接点击 PermOpener 图标 → 自动执行权限全开 → 显示日志
+
+**方式2：ADB 启动（有界面）**
+```bash
+am start -n com.permopener/.MainActivity
+```
+
+**方式3：透明 Activity 远程唤醒（无界面静默执行）**
+```bash
+# APP 被杀死后也能用 - 静默执行权限全开
+am start -n com.permopener/.AdbCommandActivity --es action run
+
+# 仅查询 Shizuku 状态
+am start -n com.permopener/.AdbCommandActivity --es action status
+```
+
+### 4. 查看日志
+```
+# 普通运行日志
+/sdcard/Download/PermOpener_log.txt
+
+# 静默执行日志
+/sdcard/Download/PermOpener_silent_log.txt
+```
+
+---
+
+## 🔧 透明 Activity 远程唤醒（AdbCommandActivity）
+
+### 设计思路
+从虚拟定位 APP 的 `AdbCommandActivity` 移植。核心作用：
+- **APP 进程被杀后**，通过 `am start` 唤醒并执行命令
+- **完全透明**（`Theme.Translucent.NoTitleBar`），用户无感知
+- 支持静默执行模式（Shizuku 已授权时）和引导授权模式
+
+### 实现代码
+```kotlin
+class AdbCommandActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        when (action) {
+            "run" -> { /* 已授权→静默执行；未授权→启动MainActivity */ }
+            "status" -> { /* 查询Shizuku状态 */ }
+        }
+        finish()
+    }
+}
+```
+
+### AndroidManifest 注册
+```xml
+<activity
+    android:name=".AdbCommandActivity"
+    android:exported="true"
+    android:excludeFromRecents="true"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+```
+
+---
+
+## 📝 appops 命令研究
+
+### 命令格式（2种都要试）
+
+| 格式 | 示例 | 适用 |
+|------|------|------|
+| 带 `android:` 前缀 | `appops set pkg android:fine_location allow` | 标准 Android 系统 |
+| 不带前缀 | `appops set pkg PROJECT_MEDIA allow` | 部分厂商系统（如 vivo 的投屏权限） |
+
+### 关键发现
+- **大部分 appops 必须带 `android:` 前缀**（如 `android:system_alert_window`、`android:camera`）
+- **不带 `android:` 前缀的写法**在部分厂商系统上也能识别，但更不稳定
+- **自启动权限**（vivo）不是标准 appops，`BOOT_COMPLETED`、`AUTO_START` 等通用名称在 vivo 上**全部无效**
+- 厂商定制权限（悬浮窗、锁屏、省电白名单等）的标准 appop 名称因厂商而异
+
+### 命令来源
+所有 appops 命令从 Android 源码 `AppOpsManager.java`（AOSP main 分支）中的 `OPSTR_` 常量提取。
+
+---
+
+## 🔧 构建配置要点（Proot/ARM64 环境）
+
+```properties
+# gradle.properties
+android.aapt2.process.daemon=false
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+```
+
+```kotlin
+// app/build.gradle.kts（强制 ARM64 AAPT2）
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "com.android.tools.build" && requested.name == "aapt2") {
+            useTarget("com.android.tools.build:aapt2:${'$'}{requested.version}:linux-aarch64")
+        }
+    }
+}
+```
+
+**仓库配置（国内镜像加速）**：
+```kotlin
+maven("https://maven.aliyun.com/repository/gradle-plugin")
+maven("https://maven.aliyun.com/repository/google")
+maven("https://repo.huaweicloud.com/repository/maven/")
+```
+
+---
+
+## 📊 实测结果（vivo V2313A / Android 14）
+
+| 阶段 | 成功 | 失败 |
+|------|------|------|
+| `pm grant` | 30 | 0 ✅ |
+| 标准 appops（带 `android:`） | 146 | 0 ✅ |
+| 厂商命令（`PROJECT_MEDIA`） | 1 | 0 ✅ |
+| `settings put` | 2 | 0 ✅ |
+| **总计** | **180** | **0** 🎉 |
+
+### 已删除的失败项（确认无需关注）
+1. **Android 高版本废弃权限**（4项）— `READ_EXTERNAL_STORAGE`、`WRITE_EXTERNAL_STORAGE` 等
+2. **系统级 appops**（5项）— `write_system_preferences` 等普通 app 无法设置
+3. **通用厂商命令**（37项）— 自启动、后台、悬浮窗等 vivo 不识别
+4. **冗余写法**（约 13项）— 不带 `android:` 前缀的重复尝试
+
+---
+
+## 💡 经验教训总结
+
+1. **授权监听器用 `addRequestPermissionResultListener`**，不是 `onActivityResult`
+2. **禁不禁用预先检查**，直接请求授权最可靠
+3. **反射 `newProcess` 放在 Java 文件**，不要放 Kotlin
+4. **appops 命令两种格式都试**，带/不带 `android:` 前缀
+5. **日志保存到 `/sdcard/Download/`** 比 logcat 更持久
+6. **自启动是厂商定制**，标准 Android 无统一 appops 控制
+7. **APK 安装用 `cat apk \| pm install -g -S`** 绕过 SELinux 限制
+8. **透明 Activity 作为远程唤醒入口**，APP 被杀后也能通过 `am start` 执行命令
+9. **静默执行模式**：Shizuku 已授权时，后台完成所有操作，用户无感知
+
+---
+
+## 📚 参考
+
+- [Shizuku 官方文档](https://shizuku.rikka.app/)
+- [Android AppOpsManager 源码](https://android.googlesource.com/platform/frameworks/base/+/main/core/java/android/app/AppOpsManager.java)
+- [虚拟定位APP（AdbCommandActivity 来源）](https://github.com/your-org/virtuallocation)
+- [FloatRunner（ShizukuShell 来源）](https://github.com/your-org/floatrunner)
+
+---
+
+*最后更新：2026-05-04 · 构建于 Operit Android 环境*
+

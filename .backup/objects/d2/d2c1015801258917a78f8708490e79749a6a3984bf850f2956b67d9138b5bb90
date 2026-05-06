@@ -1,0 +1,143 @@
+package com.permopener;
+
+import java.lang.reflect.Method;
+
+/**
+ * Shizuku 反射工具类
+ * 必须放在 Java 文件中，绕过 Kotlin 对 private 方法的编译检查
+ *
+ * 经验来源：记忆库 "Shizuku 集成最终教训"
+ * - Shizuku.ping() 不是公开 API，需要反射
+ * - Shizuku.newProcess() 是 private 方法，需要反射 + setAccessible
+ * - 每次调用独立反射获取 method，不缓存，避免一次失败影响后续
+ */
+public class ShizukuShell {
+
+    // ========== 可用性检测 ==========
+
+    public static boolean isAvailable() {
+        try {
+            Class<?> c = Class.forName("rikka.shizuku.Shizuku");
+            Method m = c.getMethod("ping");
+            return (boolean) m.invoke(null);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static boolean isGranted() {
+        try {
+            Class<?> c = Class.forName("rikka.shizuku.Shizuku");
+            Method m = c.getMethod("checkSelfPermission");
+            int r = (int) m.invoke(null);
+            return r == 0; // GRANTED
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ========== 请求授权 ==========
+
+    /**
+     * 请求 Shizuku 授权
+     * @param requestCode 请求码，用于回调时匹配
+     * @param listener    授权结果回调 (requestCode, grantResult)
+     */
+    public static void requestPermission(int requestCode, OnShizukuResult listener) {
+        try {
+            Class<?> c = Class.forName("rikka.shizuku.Shizuku");
+            Method request = c.getMethod("requestPermission", int.class);
+            request.invoke(null, requestCode);
+
+            // 注册授权结果监听器
+            // Shizuku.addRequestPermissionResultListener(listener)
+            // 其中 listener 是 OnRequestPermissionResultListener 接口
+            Class<?> listenerCls = Class.forName("rikka.shizuku.Shizuku$OnRequestPermissionResultListener");
+            Method addListener = c.getMethod("addRequestPermissionResultListener", listenerCls);
+
+            // 创建代理实例
+            Object proxy = java.lang.reflect.Proxy.newProxyInstance(
+                listenerCls.getClassLoader(),
+                new Class<?>[]{listenerCls},
+                (proxyObj, method2, args) -> {
+                    if ("onRequestPermissionResult".equals(method2.getName())) {
+                        int code = (int) args[0];
+                        int result = (int) args[1];
+                        listener.onResult(code, result == 0); // 0 = GRANTED
+                    }
+                    return null;
+                }
+            );
+            addListener.invoke(null, proxy);
+        } catch (Exception e) {
+            listener.onError(e.getMessage());
+        }
+    }
+
+    // ========== 执行 shell 命令 ==========
+
+    /**
+     * 通过 Shizuku 的 newProcess("sh") 获取 shell，执行命令
+     * @param cmd 要执行的 shell 命令
+     * @return 命令输出（含 stdout + stderr）
+     */
+    public static ShellResult exec(String cmd) {
+        try {
+            Class<?> c = Class.forName("rikka.shizuku.Shizuku");
+            Method m = c.getDeclaredMethod("newProcess",
+                String[].class, String[].class, String.class);
+            m.setAccessible(true);
+
+            Process proc = (Process) m.invoke(null,
+                new Object[]{new String[]{"sh"}, null, null});
+
+            // 写入命令，加入退出码标记
+            java.io.OutputStream os = proc.getOutputStream();
+            os.write(("" + cmd + " 2>&1\necho \"__EXIT__:$?\"\n").getBytes());
+            os.write("exit\n".getBytes());
+            os.flush();
+
+            // 读取全部输出
+            java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(proc.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            String output = sb.toString().trim();
+
+            // 提取退出码
+            int exitCode = proc.waitFor();
+            java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("__EXIT__:(\\d+)").matcher(output);
+            if (matcher.find()) {
+                try {
+                    exitCode = Integer.parseInt(matcher.group(1));
+                } catch (NumberFormatException ignored) {}
+            }
+            // 清理标记行
+            String clean = output.replaceAll("__EXIT__:\\d+\\s*", "").trim();
+            return new ShellResult(exitCode, clean);
+        } catch (Exception e) {
+            return new ShellResult(-1, "ERR: " + e.getMessage());
+        }
+    }
+
+    // ========== 结果类 ==========
+
+    public interface OnShizukuResult {
+        void onResult(int requestCode, boolean granted);
+        void onError(String message);
+    }
+
+    public static class ShellResult {
+        public final int exitCode;
+        public final String output;
+
+        public ShellResult(int exitCode, String output) {
+            this.exitCode = exitCode;
+            this.output = output;
+        }
+    }
+}

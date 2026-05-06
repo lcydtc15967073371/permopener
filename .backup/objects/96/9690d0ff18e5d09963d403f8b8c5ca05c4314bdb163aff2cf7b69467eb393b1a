@@ -1,0 +1,183 @@
+package com.permopener
+
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+
+/**
+ * 透明无界面 Activity，用于通过 am start 远程触发执行权限全开。
+ *
+ * 用法：
+ *   am start -n com.permopener/.AdbCommandActivity --es action run
+ *   am start -n com.permopener/.AdbCommandActivity --es action run --ez force true
+ *
+ * 也支持通过 ADB 广播唤醒（需要有 APP 进程时）:
+ *   am broadcast -a com.permopener.ADB_COMMAND --es action run
+ *
+ * action 支持:
+ *   run    — 执行权限全开（等同于打开 APP）
+ *   status — 检查 Shizuku 状态并执行
+ */
+class AdbCommandActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val action = intent.getStringExtra("action")?.lowercase() ?: run {
+            toast("⚠️ 缺少 action 参数")
+            finish()
+            return
+        }
+
+        try {
+            when (action) {
+                "run", "grant", "open" -> handleRun()
+                "status" -> handleStatus()
+                else -> toast("⚠️ 未知命令: $action")
+            }
+        } catch (e: Exception) {
+            toast("❌ ${e.message}")
+        }
+
+        finish()
+    }
+
+    private fun handleRun() {
+        // 检查 Shizuku 是否已授权
+        val granted = try {
+            rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } catch (_: Exception) { false }
+
+        if (granted) {
+            // 已授权 → 静默执行（日志保存到文件，无界面）
+            toast("🔧 正在静默执行...")
+            executeSilently()
+        } else {
+            // 未授权 → 启动 MainActivity 让用户授权
+            toast("⏳ Shizuku 未授权，打开 APP 授权")
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            if (intent != null) {
+                intent.addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+                )
+                startActivity(intent)
+            }
+        }
+    }
+
+    /** 静默执行所有权限命令 */
+    private fun executeSilently() {
+        val sb = StringBuilder()
+        val PKG = packageName
+
+        sb.append("PermOpener 静默执行\n设备: ${android.os.Build.MODEL}\n\n")
+
+        // pm grant
+        var ok = 0; var fail = 0
+        sb.append("── pm grant ──\n")
+        for (perm in listOf(
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.READ_PHONE_STATE",
+            "android.permission.CALL_PHONE",
+            "android.permission.READ_CALL_LOG",
+            "android.permission.WRITE_CALL_LOG",
+            "android.permission.USE_SIP",
+            "android.permission.PROCESS_OUTGOING_CALLS",
+            "android.permission.SEND_SMS",
+            "android.permission.RECEIVE_SMS",
+            "android.permission.READ_SMS",
+            "android.permission.RECEIVE_WAP_PUSH",
+            "android.permission.RECEIVE_MMS",
+            "android.permission.READ_CONTACTS",
+            "android.permission.WRITE_CONTACTS",
+            "android.permission.GET_ACCOUNTS",
+            "android.permission.READ_CALENDAR",
+            "android.permission.WRITE_CALENDAR",
+            "android.permission.BODY_SENSORS",
+            "android.permission.ACTIVITY_RECOGNITION",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.ANSWER_PHONE_CALLS",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.BLUETOOTH_SCAN",
+            "android.permission.BLUETOOTH_ADVERTISE",
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+            "android.permission.READ_MEDIA_AUDIO",
+        )) {
+            val r = ShizukuShell.exec("pm grant $PKG $perm")
+            if (r.exitCode == 0) ok++ else fail++
+        }
+        sb.append("  pm grant: +$ok -$fail\n")
+
+        // appops set（只跑最核心的）
+        ok = 0; fail = 0
+        sb.append("── appops set ──\n")
+        for (op in listOf(
+            "android:fine_location", "android:coarse_location",
+            "android:camera", "android:record_audio",
+            "android:read_phone_state", "android:call_phone",
+            "android:read_contacts", "android:write_contacts",
+            "android:read_sms", "android:send_sms",
+            "android:read_external_storage",
+            "android:system_alert_window", "android:write_settings",
+            "android:post_notification",
+            "android:run_in_background", "android:run_any_in_background",
+            "android:start_foreground",
+            "android:mock_location",
+            "android:get_usage_stats",
+            "android:request_install_packages",
+            "android:request_delete_packages",
+            "android:manage_external_storage",
+            "android:wake_lock", "android:vibrate",
+            "android:bluetooth_connect", "android:bluetooth_scan",
+            "android:bluetooth_advertise",
+            "PROJECT_MEDIA",
+        )) {
+            val r = ShizukuShell.exec("appops set $PKG $op allow")
+            if (r.exitCode == 0) ok++ else fail++
+        }
+        sb.append("  appops: +$ok -$fail\n")
+
+        // settings
+        ok = 0; fail = 0
+        sb.append("── settings ──\n")
+        for (cmd in listOf(
+            "settings put secure install_non_market_apps 1",
+        )) {
+            val r = ShizukuShell.exec(cmd)
+            if (r.exitCode == 0) ok++ else fail++
+        }
+        sb.append("  settings: +$ok -$fail\n")
+
+        sb.append("\n✅ 静默执行完成\n")
+
+        // 保存日志
+        try {
+            java.io.FileWriter("/sdcard/Download/PermOpener_silent_log.txt").use { it.write(sb.toString()) }
+        } catch (_: Exception) {}
+    }
+
+    private fun handleStatus() {
+        val available = ShizukuShell.isAvailable()
+        val granted = try {
+            rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } catch (_: Exception) { false }
+
+        val msg = when {
+            !available -> "⚠️ Shizuku 未运行"
+            !granted -> "⏳ Shizuku 已运行但未授权"
+            else -> "✅ Shizuku 已授权，可执行"
+        }
+        toast(msg)
+    }
+
+    private fun toast(msg: String) {
+        try {
+            Toast.makeText(this, "PermOpener: $msg", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {}
+    }
+}

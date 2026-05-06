@@ -1,0 +1,469 @@
+package com.permopener
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Environment
+import android.os.Process
+import android.provider.Settings
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import java.io.BufferedReader
+import java.io.InputStreamReader
+
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "PermOpener"
+        private const val REQUEST_ALL_PERMS = 1001
+        private const val REQUEST_SHIZUKU = 1002
+        private const val REQUEST_MANAGE_STORAGE = 1003
+        private const val REQUEST_WRITE_SETTINGS = 1004
+        private const val REQUEST_SYSTEM_ALERT = 1005
+        private const val REQUEST_INSTALL_PACKAGES = 1006
+        private const val REQUEST_NOTIFICATION_POLICY = 1007
+    }
+
+    // 需要请求的所有运行时权限（Android 13+ / 低版本分别处理）
+    private val runtimePermissions = buildList {
+        // 基础
+        add(Manifest.permission.INTERNET)
+        // 位置
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (Build.VERSION.SDK_INT >= 30) add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        // 存储（Android 13+ 用 Media 权限替代）
+        if (Build.VERSION.SDK_INT >= 33) {
+            add(Manifest.permission.READ_MEDIA_IMAGES)
+            add(Manifest.permission.READ_MEDIA_VIDEO)
+            add(Manifest.permission.READ_MEDIA_AUDIO)
+        } else {
+            add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+        // 相机
+        add(Manifest.permission.CAMERA)
+        // 麦克风
+        add(Manifest.permission.RECORD_AUDIO)
+        // 电话
+        add(Manifest.permission.READ_PHONE_STATE)
+        add(Manifest.permission.CALL_PHONE)
+        if (Build.VERSION.SDK_INT >= 26) add(Manifest.permission.ANSWER_PHONE_CALLS)
+        add(Manifest.permission.READ_CALL_LOG)
+        add(Manifest.permission.WRITE_CALL_LOG)
+        add(Manifest.permission.ADD_VOICEMAIL)
+        add(Manifest.permission.USE_SIP)
+        // 短信
+        add(Manifest.permission.SEND_SMS)
+        add(Manifest.permission.RECEIVE_SMS)
+        add(Manifest.permission.READ_SMS)
+        add(Manifest.permission.RECEIVE_WAP_PUSH)
+        add(Manifest.permission.RECEIVE_MMS)
+        // 通讯录
+        add(Manifest.permission.READ_CONTACTS)
+        add(Manifest.permission.WRITE_CONTACTS)
+        add(Manifest.permission.GET_ACCOUNTS)
+        // 日历
+        add(Manifest.permission.READ_CALENDAR)
+        add(Manifest.permission.WRITE_CALENDAR)
+        // 传感器
+        add(Manifest.permission.BODY_SENSORS)
+        add(Manifest.permission.ACTIVITY_RECOGNITION)
+        // 通知
+        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+        // 蓝牙
+        if (Build.VERSION.SDK_INT >= 31) {
+            add(Manifest.permission.BLUETOOTH_CONNECT)
+            add(Manifest.permission.BLUETOOTH_SCAN)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+        } else {
+            add(Manifest.permission.BLUETOOTH)
+            add(Manifest.permission.BLUETOOTH_ADMIN)
+        }
+        // NFC
+        add(Manifest.permission.NFC)
+        // 其他
+        add(Manifest.permission.VIBRATE)
+        add(Manifest.permission.FOREGROUND_SERVICE)
+        add(Manifest.permission.REQUEST_DELETE_PACKAGES)
+        add(Manifest.permission.ACCESS_NETWORK_STATE)
+        add(Manifest.permission.ACCESS_WIFI_STATE)
+        add(Manifest.permission.CHANGE_WIFI_STATE)
+        add(Manifest.permission.CHANGE_NETWORK_STATE)
+    }
+
+    // Shizuku appops 要执行的命令列表
+    private val shizukuCommands = listOf(
+        // 模拟定位
+        "appops set com.permopener android:mock_location allow",
+        // 通知
+        "appops set com.permopener android:post_notifications allow",
+        // 悬浮窗
+        "appops set com.permopener SYSTEM_ALERT_WINDOW allow",
+        // 写入设置
+        "appops set com.permopener WRITE_SETTINGS allow",
+        // 后台启动 Activity
+        "appops set com.permopener START_ACTIVITY_BACKGROUND allow",
+        // 后台服务
+        "appops set com.permopener START_FOREGROUND allow",
+        // 使用统计
+        "appops set com.permopener GET_USAGE_STATS allow",
+        // 安装未知来源
+        "appops set com.permopener REQUEST_INSTALL_PACKAGES allow",
+        // 读取应用通知
+        "appops set com.permopener GET_NOTIFICATION allow",
+        // 管理外部存储
+        "appops set com.permopener MANAGE_EXTERNAL_STORAGE allow",
+        // 相机
+        "appops set com.permopener android:camera allow",
+        // 录音
+        "appops set com.permopener android:record_audio allow",
+        // 位置
+        "appops set com.permopener android:fine_location allow",
+        // 读取手机状态
+        "appops set com.permopener android:read_phone_state allow",
+        // 保持唤醒
+        "appops set com.permopener WAKE_LOCK allow",
+        // 设备传感器
+        "appops set com.permopener android:body_sensors allow",
+    )
+
+    private var logLines = mutableStateListOf<String>()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+            MaterialTheme(colorScheme = lightColorScheme()) {
+                PermOpenerUI(
+                    logLines = logLines,
+                    onRequestRuntimePerms = { requestAllRuntimePermissions() },
+                    onRequestSpecialPerms = { requestAllSpecialPermissions() },
+                    onShizukuGrant = { shizukuGrantAll() }
+                )
+            }
+        }
+
+        // 启动时自动依次执行
+        autoExecute()
+    }
+
+    private fun autoExecute() {
+        log("=== PermOpener 权限全开工具 ===")
+        log("设备: ${Build.MODEL}, Android ${Build.VERSION.RELEASE}")
+        log("包名: com.permopener")
+        log("")
+
+        // 第一步：请求特殊权限（需要 Intent 跳转的）
+        log(">>> 第一步：请求特殊系统权限...")
+        requestAllSpecialPermissions()
+
+        // 第二步：请求运行时权限（在 onResume / onActivityResult 中接力）
+    }
+
+    private fun requestAllRuntimePermissions() {
+        log(">>> 请求运行时权限...")
+        val toRequest = runtimePermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (toRequest.isEmpty()) {
+            log("✓ 所有运行时权限已授予")
+            // 继续 Shizuku 步骤
+            tryShizuku()
+        } else {
+            log("→ 需要请求 ${toRequest.size} 个权限")
+            ActivityCompat.requestPermissions(this, toRequest.toTypedArray(), REQUEST_ALL_PERMS)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_ALL_PERMS) {
+            var granted = 0
+            for (i in permissions.indices) {
+                if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                    granted++
+                }
+            }
+            log("✓ 运行时权限: $granted/${permissions.size} 个已授权")
+            // 继续 Shizuku
+            tryShizuku()
+        }
+    }
+
+    private fun requestAllSpecialPermissions() {
+        // 1. 悬浮窗
+        if (!Settings.canDrawOverlays(this)) {
+            log("→ 请求悬浮窗权限")
+            startActivityForResult(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                ), REQUEST_SYSTEM_ALERT
+            )
+        }
+
+        // 2. 写入设置
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.System.canWrite(this)) {
+            log("→ 请求写入设置权限")
+            startActivityForResult(
+                Intent(
+                    Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                    Uri.parse("package:$packageName")
+                ), REQUEST_WRITE_SETTINGS
+            )
+        }
+
+        // 3. 管理所有文件
+        if (Build.VERSION.SDK_INT >= 30) {
+            if (!Environment.isExternalStorageManager()) {
+                log("→ 请求管理所有文件权限")
+                startActivityForResult(
+                    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:$packageName")
+                    }, REQUEST_MANAGE_STORAGE
+                )
+            }
+        }
+
+        // 4. 安装未知来源
+        if (Build.VERSION.SDK_INT >= 26) {
+            if (!packageManager.canRequestPackageInstalls()) {
+                log("→ 请求安装未知来源")
+                startActivityForResult(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")
+                    ), REQUEST_INSTALL_PACKAGES
+                )
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            REQUEST_SHIZUKU -> {
+                log("→ Shizuku 授权返回")
+                tryShizuku()
+            }
+            REQUEST_SYSTEM_ALERT,
+            REQUEST_WRITE_SETTINGS,
+            REQUEST_MANAGE_STORAGE,
+            REQUEST_INSTALL_PACKAGES -> {
+                log("→ 特殊权限设置返回")
+                // 特殊权限返回后等待用户确认，延迟继续
+                window.decorView.postDelayed({ tryShizuku() }, 500)
+            }
+        }
+    }
+
+    private fun tryShizuku() {
+        log(">>> 第二步：检测 Shizuku...")
+        if (!ShizukuShell.isAvailable()) {
+            log("✗ Shizuku 不可用！请先安装 Shizuku")
+            log("   下载: https://shizuku.rikka.app/download/")
+            log("")
+            log("=== 完成（部分权限未通过 Shizuku 开启） ===")
+            return
+        }
+
+        log("✓ Shizuku 可用，请求授权...")
+        try {
+            val shizukuClass = Class.forName("rikka.shizuku.Shizuku")
+            val checkMethod = shizukuClass.getMethod("checkSelfPermission")
+            val permResult = checkMethod.invoke(null) as Int
+            if (permResult == 0) { // GRANTED
+                log("✓ Shizuku 已有授权，开始执行 appops...")
+                executeShizukuCommands()
+            } else {
+                log("→ 需要 Shizuku 授权，弹出授权请求")
+                val requestMethod = shizukuClass.getMethod("requestPermission", Int::class.java)
+                requestMethod.invoke(null, REQUEST_SHIZUKU)
+            }
+        } catch (e: Exception) {
+            log("✗ Shizuku 交互失败: ${e.message}")
+        }
+    }
+
+    private fun executeShizukuCommands() {
+        log(">>> 通过 Shizuku 执行 appops 修改权限...")
+        var successCount = 0
+        var failCount = 0
+
+        for (cmd in shizukuCommands) {
+            try {
+                val process = ShizukuShell.exec("sh")
+                if (process == null) {
+                    log("✗ ShizukuShell.exec() 返回 null")
+                    break
+                }
+                val os = process.outputStream
+                os.write("$cmd\n".toByteArray())
+                os.write("exit\n".toByteArray())
+                os.flush()
+
+                val reader = BufferedReader(InputStreamReader(process.inputStream))
+                val output = reader.readText()
+                val exitCode = process.waitFor()
+
+                if (exitCode == 0) {
+                    successCount++
+                } else {
+                    log("✗ [$cmd] 失败 exit=$exitCode: $output")
+                    failCount++
+                }
+            } catch (e: Exception) {
+                log("✗ [$cmd] 异常: ${e.message}")
+                failCount++
+            }
+        }
+
+        log("")
+        log("=== Shizuku appops 完成 ===")
+        log("成功: $successCount, 失败: $failCount")
+        log("")
+        log("全部完成！部分权限可能需要重启 APP 生效。")
+        log("如需更多权限，可再次点击按钮执行。")
+
+        // 尝试 kill 自己进程让权限生效
+        log("")
+        log("提示：建议杀掉进程重开使权限生效")
+    }
+
+    private fun log(msg: String) {
+        Log.d(TAG, msg)
+        logLines.add(msg)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PermOpenerUI(
+    logLines: MutableList<String>,
+    onRequestRuntimePerms: () -> Unit,
+    onRequestSpecialPerms: () -> Unit,
+    onShizukuGrant: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("PermOpener 权限全开") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp)
+        ) {
+            // 说明
+            Text(
+                text = "一键开启 APP 全部权限（Shizuku + 运行时权限）",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            // 按钮行
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onRequestRuntimePerms,
+                    modifier = Modifier.weight(1f)
+                ) { Text("运行时权限") }
+                Button(
+                    onClick = onRequestSpecialPerms,
+                    modifier = Modifier.weight(1f)
+                ) { Text("特殊权限") }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Button(
+                onClick = onShizukuGrant,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary
+                )
+            ) { Text("Shizuku appops 全开") }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 日志
+            Text(
+                text = "执行日志：",
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF1A1A2E),
+                shape = MaterialTheme.shapes.small
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(8.dp)
+                ) {
+                    if (logLines.isEmpty()) {
+                        Text(
+                            text = "等待操作...",
+                            color = Color.Gray,
+                            fontSize = 12.sp
+                        )
+                    }
+                    logLines.forEach { line ->
+                        val color = when {
+                            line.startsWith("✓") -> Color(0xFF4CAF50)
+                            line.startsWith("✗") -> Color(0xFFF44336)
+                            line.startsWith("→") -> Color(0xFFFFC107)
+                            line.startsWith(">>>") || line.startsWith("===") -> Color(0xFF2196F3)
+                            else -> Color(0xFFB0B0B0)
+                        }
+                        Text(
+                            text = line,
+                            color = color,
+                            fontSize = 11.sp,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            modifier = Modifier.padding(vertical = 1.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

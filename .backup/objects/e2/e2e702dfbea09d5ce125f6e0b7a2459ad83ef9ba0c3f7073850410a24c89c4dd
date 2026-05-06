@@ -1,0 +1,35 @@
+package com.permopener;
+
+import java.lang.reflect.Method;
+
+public class ShizukuShell {
+    private static Method newProcessMethod;
+    private static Class<?> shizukuClass;
+
+    public static boolean isAvailable() {
+        try {
+            if (shizukuClass == null) {
+                shizukuClass = Class.forName("rikka.shizuku.Shizuku");
+            }
+            Method ping = shizukuClass.getMethod("ping");
+            return (boolean) ping.invoke(null);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static Process exec(String cmd) {
+        try {
+            if (shizukuClass == null) {
+                shizukuClass = Class.forName("rikka.shizuku.Shizuku");
+            }
+            if (newProcessMethod == null) {
+                newProcessMethod = shizukuClass.getDeclaredMethod("newProcess", String[].class, String[].class, String.class);
+                newProcessMethod.setAccessible(true);
+            }
+            return (Process) newProcessMethod.invoke(null, new Object[]{new String[]{"sh"}, null, null});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+}

@@ -1,0 +1,325 @@
+package com.permopener
+
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import android.widget.TextView
+import android.graphics.Color
+import android.view.Gravity
+import android.view.ViewGroup
+import android.widget.ScrollView
+import android.widget.LinearLayout
+import androidx.activity.ComponentActivity
+import rikka.shizuku.Shizuku
+
+/**
+ * PermOpener v3.0 — 从 Android 源码 AppOpsManager.java 提取完整正确命令
+ *
+ * 关键修正：
+ * 1. 所有 appops 命令加 android: 前缀（如 SYSTEM_ALERT_WINDOW → android:system_alert_window）
+ * 2. 补充遗漏项（run_in_background, run_any_in_background, request_delete_packages 等）
+ * 3. finishAfter 改为不自动关闭，让用户看到日志后手动退出
+ */
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "PermOpener"
+        private const val REQUEST_CODE = 1001
+        private const val PKG = "com.permopener"
+
+        // pm grant 可授予的权限（来自 Manifest.permission）
+        private val PM_GRANTS = listOf(
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.READ_EXTERNAL_STORAGE",
+            "android.permission.WRITE_EXTERNAL_STORAGE",
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.READ_PHONE_STATE",
+            "android.permission.CALL_PHONE",
+            "android.permission.READ_CALL_LOG",
+            "android.permission.WRITE_CALL_LOG",
+            "android.permission.ADD_VOICEMAIL",
+            "android.permission.USE_SIP",
+            "android.permission.PROCESS_OUTGOING_CALLS",
+            "android.permission.SEND_SMS",
+            "android.permission.RECEIVE_SMS",
+            "android.permission.READ_SMS",
+            "android.permission.RECEIVE_WAP_PUSH",
+            "android.permission.RECEIVE_MMS",
+            "android.permission.READ_CONTACTS",
+            "android.permission.WRITE_CONTACTS",
+            "android.permission.GET_ACCOUNTS",
+            "android.permission.READ_CALENDAR",
+            "android.permission.WRITE_CALENDAR",
+            "android.permission.BODY_SENSORS",
+            "android.permission.ACTIVITY_RECOGNITION",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.BLUETOOTH",
+            "android.permission.BLUETOOTH_ADMIN",
+            "android.permission.NFC",
+            "android.permission.VIBRATE",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.ACCESS_NETWORK_STATE",
+            "android.permission.ACCESS_WIFI_STATE",
+            "android.permission.CHANGE_WIFI_STATE",
+            "android.permission.CHANGE_NETWORK_STATE",
+            "android.permission.FOREGROUND_SERVICE_LOCATION",
+            "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+            "android.permission.FOREGROUND_SERVICE_CAMERA",
+            "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+            "android.permission.ANSWER_PHONE_CALLS",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.BLUETOOTH_SCAN",
+            "android.permission.BLUETOOTH_ADVERTISE",
+            "android.permission.READ_PHONE_NUMBERS",
+            "android.permission.USE_FINGERPRINT",
+            "android.permission.USE_BIOMETRIC",
+            "android.permission.ACCESS_MEDIA_LOCATION",
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+            "android.permission.READ_MEDIA_AUDIO",
+            "android.permission.QUERY_ALL_PACKAGES",
+            "android.permission.UWB_RANGING",
+            "android.permission.NEARBY_WIFI_DEVICES",
+            "android.permission.BODY_SENSORS_BACKGROUND",
+        )
+
+        // appops set 命令 — 全部从 Android 源码 AppOpsManager.java 提取正确名称
+        private val APP_OPS = listOf(
+            // 标准权限对应 appops（直接关联运行时权限）
+            "android:coarse_location",
+            "android:fine_location",
+            "android:read_contacts",
+            "android:write_contacts",
+            "android:read_call_log",
+            "android:write_call_log",
+            "android:read_calendar",
+            "android:write_calendar",
+            "android:call_phone",
+            "android:read_sms",
+            "android:receive_sms",
+            "android:receive_mms",
+            "android:receive_wap_push",
+            "android:send_sms",
+            "android:camera",
+            "android:record_audio",
+            "android:read_phone_state",
+            "android:add_voicemail",
+            "android:use_sip",
+            "android:process_outgoing_calls",
+            "android:use_fingerprint",
+            "android:body_sensors",
+            "android:read_cell_broadcasts",
+            "android:mock_location",
+            "android:read_external_storage",
+            "android:write_external_storage",
+            "android:system_alert_window",
+            "android:write_settings",
+            "android:get_accounts",
+            "android:read_phone_numbers",
+            "android:picture_in_picture",
+            "android:answer_phone_calls",
+            "android:accept_handover",
+            "android:gps",
+            "android:vibrate",
+            "android:wifi_scan",
+            "android:post_notification",
+            "android:neighboring_cells",
+            "android:write_sms",
+            "android:receive_emergency_broadcast",
+            "android:read_icc_sms",
+            "android:write_icc_sms",
+            "android:access_notifications",
+            "android:play_audio",
+            "android:read_clipboard",
+            "android:write_clipboard",
+            "android:take_media_buttons",
+            "android:take_audio_focus",
+            "android:wake_lock",
+            "android:mute_microphone",
+            "android:toast_window",
+            "android:project_media",
+            "android:write_wallpaper",
+            "android:assist_structure",
+            "android:assist_screenshot",
+            "android:turn_screen_on",
+            "android:run_in_background",
+            "android:request_install_packages",
+            "android:run_any_in_background",
+            "android:change_wifi_state",
+            "android:request_delete_packages",
+            "android:bind_accessibility_service",
+            "android:manage_ipsec_tunnels",
+            "android:start_foreground",
+            "android:bluetooth_scan",
+            "android:bluetooth_connect",
+            "android:bluetooth_advertise",
+            "android:use_biometric",
+            "android:activity_recognition",
+            "android:read_media_audio",
+            "android:write_media_audio",
+            "android:read_media_video",
+            "android:write_media_video",
+            "android:read_media_images",
+            "android:write_media_images",
+            "android:legacy_storage",
+            "android:access_media_location",
+            "android:access_accessibility",
+            "android:read_device_identifiers",
+            "android:monitor_location",
+            "android:monitor_location_high_power",
+            "android:get_usage_stats",
+            "android:activate_vpn",
+            "android:instant_app_start_foreground",
+            "android:sms_financial_transactions",
+            "android:read_heart_rate",
+            "android:read_oxygen_saturation",
+            "android:read_skin_temperature",
+            "android:ranging",
+            "android:write_system_preferences",
+            "android:control_audio",
+            "android:emergency_location",
+            "android:receive_sensitive_notifications",
+        )
+
+        private val SETTINGS_CMDS = listOf(
+            "settings put secure install_non_market_apps 1",
+            "settings put global development_settings_enabled 1",
+        )
+    }
+
+    private var listener: Shizuku.OnRequestPermissionResultListener? = null
+    private val logLines = mutableListOf<String>()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // 创建一个简单布局显示日志
+        val scrollView = ScrollView(this)
+        val textView = TextView(this).apply {
+            textSize = 11f
+            isVerticalScrollBarEnabled = true
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1A1A2E"))
+            setPadding(16, 16, 16, 16)
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        scrollView.addView(textView, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(scrollView)
+
+        // 日志输出到 TextView
+        fun log(msg: String) {
+            Log.d(TAG, msg)
+            logLines.add(msg)
+            runOnUiThread {
+                textView.append("$msg\n")
+                scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
+            }
+        }
+
+        log("")
+        log("╔════════════════════════════════════╗")
+        log("║  PermOpener v3.0                   ║")
+        log("║  从Android源码提取完整appops列表  ║")
+        log("╚════════════════════════════════════╝")
+        log("设备: ${Build.MODEL} / SDK ${Build.VERSION.SDK_INT}")
+        log("")
+
+        if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+            log("✓ Shizuku 已有授权，立即执行...")
+            executeAll(log)
+            return
+        }
+
+        log("→ Shizuku 未授权，请求授权中...")
+        log("  请在弹出的 Shizuku 对话框中点击「允许」")
+
+        listener = Shizuku.OnRequestPermissionResultListener { code, result ->
+            if (code == REQUEST_CODE) {
+                if (result == PackageManager.PERMISSION_GRANTED) {
+                    log("✓ Shizuku 授权成功！")
+                    executeAll(log)
+                } else {
+                    log("✗ Shizuku 授权被拒绝")
+                    log("")
+                    log("请重新打开应用并允许授权")
+                }
+            }
+        }
+        Shizuku.addRequestPermissionResultListener(listener!!)
+        Shizuku.requestPermission(REQUEST_CODE)
+    }
+
+    private fun executeAll(log: (String) -> Unit) {
+        var ok = 0
+        var fail = 0
+
+        // 阶段1: pm grant
+        log("")
+        log("── 阶段1: pm grant ──")
+        for (perm in PM_GRANTS) {
+            val r = ShizukuShell.exec("pm grant $PKG $perm")
+            if (r.exitCode == 0) {
+                ok++
+            } else {
+                fail++
+                log("  ✗ $perm")
+            }
+        }
+        log("  pm grant: 成功=$ok 失败=$fail")
+
+        // 阶段2: appops set
+        log("")
+        log("── 阶段2: appops set ──")
+        for (op in APP_OPS) {
+            val r = ShizukuShell.exec("appops set $PKG $op allow")
+            if (r.exitCode == 0) {
+                ok++
+            } else {
+                fail++
+                log("  ✗ $op")
+            }
+        }
+        log("  appops set: 累计成功=$ok 累计失败=$fail")
+
+        // 阶段3: settings
+        log("")
+        log("── 阶段3: settings ──")
+        for (cmd in SETTINGS_CMDS) {
+            val r = ShizukuShell.exec(cmd)
+            if (r.exitCode == 0) ok++ else fail++
+        }
+        log("  settings: 累计成功=$ok 累计失败=$fail")
+
+        // 汇总
+        log("")
+        log("╔════════════════════════════════════╗")
+        log("║  全部完成！                        ║")
+        log("║  成功: $ok  失败: $fail              ║")
+        log("╚════════════════════════════════════╝")
+        log("")
+        log("提示：部分权限需重启 App 后生效")
+        log("查看日志: adb logcat -s PermOpener")
+        log("")
+        log("可手动关闭此页面")
+
+        // Toast 提示后不自动 finish
+        try {
+            runOnUiThread {
+                Toast.makeText(this, "权限全开完成！成功 $ok 项 失败 $fail 项", Toast.LENGTH_LONG).show()
+            }
+        } catch (_: Exception) {}
+    }
+
+    override fun onDestroy() {
+        if (listener != null) {
+            try { Shizuku.removeRequestPermissionResultListener(listener!!) } catch (_: Exception) {}
+        }
+        super.onDestroy()
+    }
+}

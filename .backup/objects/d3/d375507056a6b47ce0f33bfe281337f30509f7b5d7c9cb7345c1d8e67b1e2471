@@ -1,0 +1,289 @@
+package com.permopener
+
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import android.widget.TextView
+import android.graphics.Color
+import android.view.ViewGroup
+import android.widget.ScrollView
+import androidx.activity.ComponentActivity
+import rikka.shizuku.Shizuku
+import java.io.File
+import java.io.FileWriter
+
+/**
+ * PermOpener v3.3 — 同时尝试标准 + 厂商命令格式
+ * 新增：不带 android: 前缀的写法（如 PROJECT_MEDIA、AUTO_START）
+ * 新增：settings put secure 启用无障碍服务
+ */
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "PermOpener"
+        private const val REQUEST_CODE = 1001
+        private const val PKG = "com.permopener"
+        private val LOG_FILE = "/sdcard/Download/PermOpener_log.txt"
+
+        // ====== pm grant 危险权限（仅保留实测成功的项） ======
+        private val PM_GRANTS = listOf(
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.READ_PHONE_STATE",
+            "android.permission.CALL_PHONE",
+            "android.permission.READ_CALL_LOG",
+            "android.permission.WRITE_CALL_LOG",
+            "android.permission.USE_SIP",
+            "android.permission.PROCESS_OUTGOING_CALLS",
+            "android.permission.SEND_SMS",
+            "android.permission.RECEIVE_SMS",
+            "android.permission.READ_SMS",
+            "android.permission.RECEIVE_WAP_PUSH",
+            "android.permission.RECEIVE_MMS",
+            "android.permission.READ_CONTACTS",
+            "android.permission.WRITE_CONTACTS",
+            "android.permission.GET_ACCOUNTS",
+            "android.permission.READ_CALENDAR",
+            "android.permission.WRITE_CALENDAR",
+            "android.permission.BODY_SENSORS",
+            "android.permission.ACTIVITY_RECOGNITION",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.ANSWER_PHONE_CALLS",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.BLUETOOTH_SCAN",
+            "android.permission.BLUETOOTH_ADVERTISE",
+            "android.permission.READ_MEDIA_IMAGES",
+            "android.permission.READ_MEDIA_VIDEO",
+            "android.permission.READ_MEDIA_AUDIO",
+        )
+
+        // ====== 标准 appops（带 android: 前缀） ======
+        private val STANDARD_OPS = listOf(
+            "android:coarse_location", "android:fine_location",
+            "android:monitor_location", "android:monitor_location_high_power",
+            "android:gps", "android:neighboring_cells", "android:wifi_scan",
+            "android:read_contacts", "android:write_contacts", "android:get_accounts",
+            "android:read_call_log", "android:write_call_log",
+            "android:read_calendar", "android:write_calendar",
+            "android:read_sms", "android:receive_sms", "android:receive_mms",
+            "android:receive_wap_push", "android:send_sms", "android:write_sms",
+            "android:read_icc_sms", "android:write_icc_sms",
+            "android:receive_emergency_broadcast", "android:read_cell_broadcasts",
+            "android:sms_financial_transactions",
+            "android:call_phone", "android:read_phone_state", "android:read_phone_numbers",
+            "android:add_voicemail", "android:use_sip", "android:process_outgoing_calls",
+            "android:answer_phone_calls", "android:accept_handover",
+            "android:manage_ongoing_calls", "android:phone_call_microphone",
+            "android:phone_call_camera", "android:record_incoming_phone_audio",
+            "android:body_sensors", "android:use_fingerprint", "android:use_biometric",
+            "android:activity_recognition", "android:activity_recognition_source",
+            "android:camera", "android:camera_sandboxed",
+            "android:record_audio", "android:record_audio_hotword",
+            "android:record_audio_output", "android:record_audio_sandboxed",
+            "android:mute_microphone", "android:play_audio",
+            "android:read_external_storage", "android:write_external_storage",
+            "android:legacy_storage", "android:manage_external_storage",
+            "android:access_media_location",
+            "android:read_media_audio", "android:write_media_audio",
+            "android:read_media_video", "android:write_media_video",
+            "android:read_media_images", "android:write_media_images",
+            "android:manage_media", "android:read_media_visual_user_selected",
+            "android:post_notification", "android:access_notifications",
+            "android:use_full_screen_intent",
+            "android:system_alert_window", "android:write_settings",
+            "android:toast_window", "android:request_install_packages",
+            "android:request_delete_packages", "android:get_usage_stats",
+            "android:activate_vpn", "android:activate_platform_vpn",
+            "android:establish_vpn_service", "android:establish_vpn_manager",
+            "android:manage_ipsec_tunnels",
+            "android:run_in_background", "android:run_any_in_background",
+            "android:start_foreground", "android:foreground_service_special_use",
+            "android:instant_app_start_foreground", "android:turn_screen_on",
+            "android:wake_lock", "android:schedule_exact_alarm",
+            "android:run_user_initiated_jobs",
+            "android:bluetooth_scan", "android:bluetooth_connect",
+            "android:bluetooth_advertise", "android:uwb_ranging",
+            "android:nearby_wifi_devices",
+            "android:read_clipboard", "android:write_clipboard",
+            "android:bind_accessibility_service", "android:access_accessibility",
+            "android:read_device_identifiers", "android:use_icc_auth_with_device_identifier",
+            "android:query_all_packages",
+            "android:vibrate", "android:picture_in_picture", "android:mock_location",
+            "android:change_wifi_state", "android:take_media_buttons",
+            "android:take_audio_focus",
+            "android:assist_structure", "android:assist_screenshot",
+            "android:project_media", "android:write_wallpaper",
+            "android:interact_across_profiles",
+            "android:manage_credentials", "android:read_write_health_data",
+            "android:access_restricted_settings",
+            "android:no_isolated_storage", "android:loader_usage_stats",
+            "android:auto_revoke_permissions_if_unused",
+            "android:auto_revoke_managed_by_installer",
+        )
+
+        // ====== 厂商专用命令（不带 android: 前缀，仅保留实测成功的项） ======
+        private val VENDOR_OPS = listOf(
+            "PROJECT_MEDIA",  // 投屏 — vivo 上实测成功
+        )
+
+        // ====== settings put secure 命令 ======
+        private val SETTINGS_CMDS = listOf(
+            "settings put secure install_non_market_apps 1",
+            "settings put global development_settings_enabled 1",
+            // 无障碍服务启用（需指定具体服务组件名，此处仅为示例框架）
+            // 实际使用时应替换为 PackageName/ServiceClass
+        )
+    }
+
+    private var listener: Shizuku.OnRequestPermissionResultListener? = null
+    private lateinit var tvLog: TextView
+    private lateinit var svLog: ScrollView
+    private val logBuffer = StringBuilder()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        tvLog = TextView(this).apply {
+            textSize = 11f
+            isVerticalScrollBarEnabled = true
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1A1A2E"))
+            setPadding(16, 16, 16, 16)
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        svLog = ScrollView(this).apply {
+            addView(tvLog, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        setContentView(svLog)
+
+        l("")
+        l("╔════════════════════════════════════╗")
+        l("║  PermOpener v3.3                   ║")
+        l("║  标准 + 厂商命令双格式             ║")
+        l("╚════════════════════════════════════╝")
+        l("设备: ${Build.MODEL} / SDK ${Build.VERSION.SDK_INT}")
+        l("")
+
+        if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+            l("✓ Shizuku 已有授权，立即执行...")
+            runAll()
+            return
+        }
+
+        l("→ Shizuku 未授权，请求授权中...")
+        l("  请在 Shizuku 对话框中点击「允许」")
+
+        listener = Shizuku.OnRequestPermissionResultListener { code, result ->
+            if (code == REQUEST_CODE) {
+                if (result == PackageManager.PERMISSION_GRANTED) {
+                    l("✓ Shizuku 授权成功！")
+                    runAll()
+                } else {
+                    l("✗ Shizuku 授权被拒绝")
+                    l("请重新打开应用并允许授权")
+                    saveLogFile()
+                }
+            }
+        }
+        Shizuku.addRequestPermissionResultListener(listener!!)
+        Shizuku.requestPermission(REQUEST_CODE)
+    }
+
+    private fun runAll() {
+        var ok = 0
+        var fail = 0
+
+        // 阶段1: pm grant
+        l("")
+        l("── 阶段1: pm grant ──")
+        for (perm in PM_GRANTS) {
+            val r = ShizukuShell.exec("pm grant $PKG $perm")
+            if (r.exitCode == 0) ok++ else { fail++; l("  ✗ $perm") }
+        }
+        l("  pm grant: 成功=$ok 失败=$fail")
+
+        // 阶段2: 标准 appops（带 android: 前缀）
+        l("")
+        l("── 阶段2: 标准 appops ──")
+        for (op in STANDARD_OPS) {
+            val r = ShizukuShell.exec("appops set $PKG $op allow")
+            if (r.exitCode == 0) ok++ else { fail++; l("  ✗ $op") }
+        }
+        l("  标准 appops: 成功=$ok 失败=$fail")
+
+        // 阶段3: 厂商命令（不带 android: 前缀）
+        l("")
+        l("── 阶段3: 厂商命令 ──")
+        for (op in VENDOR_OPS) {
+            val r = ShizukuShell.exec("appops set $PKG $op allow")
+            if (r.exitCode == 0) ok++ else { fail++; l("  ✗ $op") }
+        }
+        l("  厂商命令: 成功=$ok 失败=$fail")
+
+        // 阶段4: settings
+        l("")
+        l("── 阶段4: settings ──")
+        for (cmd in SETTINGS_CMDS) {
+            val r = ShizukuShell.exec(cmd)
+            if (r.exitCode == 0) ok++ else fail++
+        }
+        l("  settings: 成功=$ok 失败=$fail")
+
+        // 汇总
+        l("")
+        l("╔════════════════════════════════════╗")
+        l("║  全部完成！                        ║")
+        l("║  成功: $ok  失败: $fail              ║")
+        l("╚════════════════════════════════════╝")
+        l("")
+        l("完整日志已保存到:")
+        l("  $LOG_FILE")
+        l("")
+        l("提示：部分权限需重启 App 后生效")
+        l("可手动关闭此页面")
+
+        saveLogFile()
+
+        try {
+            runOnUiThread {
+                Toast.makeText(this, "完成！成功 $ok 项 失败 $fail 项", Toast.LENGTH_LONG).show()
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun l(msg: String) {
+        Log.d(TAG, msg)
+        logBuffer.append("$msg\n")
+        runOnUiThread {
+            tvLog.append("$msg\n")
+            svLog.post { svLog.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
+    private fun saveLogFile() {
+        try {
+            File(LOG_FILE).parentFile?.mkdirs()
+            FileWriter(LOG_FILE).use { it.write(logBuffer.toString()) }
+            Log.d(TAG, "日志已保存到 $LOG_FILE")
+        } catch (e: Exception) {
+            Log.e(TAG, "保存日志失败: ${e.message}")
+            try {
+                val internalFile = File(filesDir, "permopener_log.txt")
+                FileWriter(internalFile).use { it.write(logBuffer.toString()) }
+            } catch (_: Exception) {}
+        }
+    }
+
+    override fun onDestroy() {
+        if (listener != null) {
+            try { Shizuku.removeRequestPermissionResultListener(listener!!) } catch (_: Exception) {}
+        }
+        super.onDestroy()
+    }
+}

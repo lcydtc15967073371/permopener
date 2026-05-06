@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">PermOpener</string>
+    <string name="accessibility_service_description">为 PermOpener 提供无障碍能力，用于界面自动化操作和控件抓取。</string>
+</resources>

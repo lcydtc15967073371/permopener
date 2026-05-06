@@ -1,0 +1,76 @@
+package com.permopener
+
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+
+/**
+ * 透明无界面 Activity，用于通过 am start 远程触发执行权限全开。
+ *
+ * 用法：
+ *   am start -n com.permopener/.AdbCommandActivity --es action run
+ *   am start -n com.permopener/.AdbCommandActivity --es action run --ez force true
+ *
+ * 也支持通过 ADB 广播唤醒（需要有 APP 进程时）:
+ *   am broadcast -a com.permopener.ADB_COMMAND --es action run
+ *
+ * action 支持:
+ *   run    — 执行权限全开（等同于打开 APP）
+ *   status — 检查 Shizuku 状态并执行
+ */
+class AdbCommandActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val action = intent.getStringExtra("action")?.lowercase() ?: run {
+            toast("⚠️ 缺少 action 参数")
+            finish()
+            return
+        }
+
+        try {
+            when (action) {
+                "run", "grant", "open" -> handleRun()
+                "status" -> handleStatus()
+                else -> toast("⚠️ 未知命令: $action")
+            }
+        } catch (e: Exception) {
+            toast("❌ ${e.message}")
+        }
+
+        finish()
+    }
+
+    private fun handleRun() {
+        // 启动 MainActivity — 走它的 Shizuku → 执行流程
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        if (intent != null) {
+            intent.addFlags(
+                android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
+            startActivity(intent)
+        }
+    }
+
+    private fun handleStatus() {
+        val available = ShizukuShell.isAvailable()
+        val granted = try {
+            rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } catch (_: Exception) { false }
+
+        val msg = when {
+            !available -> "⚠️ Shizuku 未运行"
+            !granted -> "⏳ Shizuku 已运行但未授权"
+            else -> "✅ Shizuku 已授权，可执行"
+        }
+        toast(msg)
+    }
+
+    private fun toast(msg: String) {
+        try {
+            Toast.makeText(this, "PermOpener: $msg", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {}
+    }
+}

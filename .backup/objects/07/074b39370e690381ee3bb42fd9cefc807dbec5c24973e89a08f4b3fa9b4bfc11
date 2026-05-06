@@ -1,0 +1,234 @@
+package com.permopener
+
+import android.content.Intent
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import kotlinx.coroutines.*
+
+/**
+ * PermOpener v2.0 - 权限全开工具
+ *
+ * 核心逻辑（完全无 UI，全自动）：
+ * 1. onCreate 即开始申请 Shizuku 授权
+ * 2. 轮询检测授权结果（比监听器更可靠）
+ * 3. 授权成功后自动执行 pm grant + appops set + settings put
+ * 4. 执行完毕自动关闭 Activity
+ */
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "PermOpener"
+        private const val REQUEST_CODE = 1001
+        private const val PKG = "com.permopener"
+        private const val POLL_INTERVAL_MS = 300L
+        private const val POLL_TIMEOUT_MS = 30000L
+
+        private val PM_GRANTS = listOf(
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.READ_EXTERNAL_STORAGE",
+            "android.permission.WRITE_EXTERNAL_STORAGE",
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.READ_PHONE_STATE",
+            "android.permission.CALL_PHONE",
+            "android.permission.READ_CALL_LOG",
+            "android.permission.WRITE_CALL_LOG",
+            "android.permission.ADD_VOICEMAIL",
+            "android.permission.USE_SIP",
+            "android.permission.SEND_SMS",
+            "android.permission.RECEIVE_SMS",
+            "android.permission.READ_SMS",
+            "android.permission.RECEIVE_WAP_PUSH",
+            "android.permission.RECEIVE_MMS",
+            "android.permission.READ_CONTACTS",
+            "android.permission.WRITE_CONTACTS",
+            "android.permission.GET_ACCOUNTS",
+            "android.permission.READ_CALENDAR",
+            "android.permission.WRITE_CALENDAR",
+            "android.permission.BODY_SENSORS",
+            "android.permission.ACTIVITY_RECOGNITION",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.BLUETOOTH",
+            "android.permission.BLUETOOTH_ADMIN",
+            "android.permission.NFC",
+            "android.permission.VIBRATE",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.ACCESS_NETWORK_STATE",
+            "android.permission.ACCESS_WIFI_STATE",
+            "android.permission.CHANGE_WIFI_STATE",
+            "android.permission.CHANGE_NETWORK_STATE",
+            "android.permission.FOREGROUND_SERVICE_LOCATION",
+            "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+            "android.permission.FOREGROUND_SERVICE_CAMERA",
+            "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+            "android.permission.ANSWER_PHONE_CALLS",
+            "android.permission.BLUETOOTH_CONNECT",
+            "android.permission.BLUETOOTH_SCAN",
+            "android.permission.BLUETOOTH_ADVERTISE",
+        )
+
+        private val APP_OPS = listOf(
+            "android:mock_location",
+            "android:post_notifications",
+            "SYSTEM_ALERT_WINDOW",
+            "WRITE_SETTINGS",
+            "START_ACTIVITY_BACKGROUND",
+            "START_FOREGROUND",
+            "GET_USAGE_STATS",
+            "REQUEST_INSTALL_PACKAGES",
+            "GET_NOTIFICATION",
+            "MANAGE_EXTERNAL_STORAGE",
+            "android:camera",
+            "android:record_audio",
+            "android:fine_location",
+            "android:read_phone_state",
+            "WAKE_LOCK",
+            "android:body_sensors",
+        )
+
+        private val SETTINGS_CMDS = listOf(
+            "settings put secure install_non_market_apps 1",
+            "settings put global development_settings_enabled 1",
+        )
+    }
+
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val logs = mutableListOf<String>()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        log("")
+        log("╔════════════════════════════════════╗")
+        log("║  PermOpener v2.0 — 内置adb全自动  ║")
+        log("╚════════════════════════════════════╝")
+        log("设备: ${Build.MODEL} / SDK ${Build.VERSION.SDK_INT}")
+        log("包名: $PKG")
+        log("")
+
+        if (!ShizukuShell.isAvailable()) {
+            log("✗ Shizuku 不可用（未安装或未启动服务）")
+            log("  请先安装 Shizuku App，启动服务后重试")
+            toast("请先安装并启动 Shizuku 服务")
+            finishAfter(6000)
+            return
+        }
+        log("✓ Shizuku 已安装且服务运行中")
+
+        if (ShizukuShell.isGranted()) {
+            log("✓ Shizuku 已有授权，跳过授权流程")
+            log("")
+            executeAll()
+            return
+        }
+
+        // 未授权 → 弹出 Shizuku 授权对话框 + 轮询等待用户点击"允许"
+        log("→ Shizuku 未授权，正在弹出授权请求...")
+        log("  请在 Shizuku 授权对话框中选择「允许」")
+        log("")
+
+        scope.launch {
+            // 主线程弹出授权请求
+            withContext(Dispatchers.Main) {
+                ShizukuShell.requestPermission(REQUEST_CODE)
+            }
+
+            // 轮询等待授权结果
+            val startTime = System.currentTimeMillis()
+            while (System.currentTimeMillis() - startTime < POLL_TIMEOUT_MS) {
+                delay(POLL_INTERVAL_MS)
+                if (ShizukuShell.isGranted()) {
+                    withContext(Dispatchers.Main) {
+                        log("✓ Shizuku 授权成功！")
+                        log("")
+                        executeAll()
+                    }
+                    return@launch
+                }
+            }
+
+            // 超时
+            withContext(Dispatchers.Main) {
+                log("✗ Shizuku 授权超时（${POLL_TIMEOUT_MS/1000}秒）")
+                log("  请确认已点击「允许」或重新打开应用")
+                toast("Shizuku 授权超时")
+                finishAfter(3000)
+            }
+        }
+    }
+
+    private fun executeAll() {
+        var ok = 0
+        var fail = 0
+
+        // 阶段1: pm grant
+        log("── 阶段1: pm grant ──")
+        for (perm in PM_GRANTS) {
+            val r = ShizukuShell.exec("pm grant $PKG $perm")
+            if (r.exitCode == 0) ok++ else {
+                fail++
+                Log.w(TAG, "pm grant $perm → ${r.exitCode}")
+            }
+        }
+        log("  pm grant: 成功=${PM_GRANTS.size - fail}/${PM_GRANTS.size}")
+
+        // 阶段2: appops set
+        var appopsOk = 0
+        log("")
+        log("── 阶段2: appops set ──")
+        for (op in APP_OPS) {
+            val r = ShizukuShell.exec("appops set $PKG $op allow")
+            if (r.exitCode == 0) appopsOk++ else {
+                fail++
+                Log.w(TAG, "appops $op → ${r.exitCode}")
+            }
+        }
+        ok += appopsOk
+        log("  appops: 成功=$appopsOk/${APP_OPS.size}")
+
+        // 阶段3: settings
+        var settingsOk = 0
+        log("")
+        log("── 阶段3: settings ──")
+        for (cmd in SETTINGS_CMDS) {
+            val r = ShizukuShell.exec(cmd)
+            if (r.exitCode == 0) settingsOk++ else fail++
+        }
+        ok += settingsOk
+
+        log("")
+        log("╔════════════════════════════════════╗")
+        log("║  全部完成！                        ║")
+        log("║  成功 $ok 项  失败 $fail 项        ║")
+        log("╚════════════════════════════════════╝")
+        log("")
+        log("提示：部分权限需重启 App 后生效")
+        log("完整日志: adb logcat -s PermOpener")
+
+        toast("权限全开完成！成功 $ok 项 失败 $fail 项")
+        finishAfter(4000)
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    // ========== 辅助 ==========
+
+    private fun log(msg: String) {
+        Log.d(TAG, msg)
+        logs.add(msg)
+    }
+
+    private fun toast(msg: String) {
+        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+    }
+
+    private fun finishAfter(ms: Long) {
+        window?.decorView?.postDelayed({ finish() }, ms)
+    }
+}
